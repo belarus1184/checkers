@@ -1,5 +1,8 @@
+# ... остальной ваш код (import Flask и так далее)
 import os
 import uuid
+from gevent import monkey
+monkey.patch_all()
 from flask import Flask, render_template, request, session
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import json
