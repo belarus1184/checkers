@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Игра в шашки</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container game-container">
+        <h1>Шашки</h1>
+        <div id="gameInfo">
+            <div id="turnStatus"></div>
+            <div id="opponentName"></div>
+        </div>
+        <canvas id="boardCanvas" width="500" height="500"></canvas>
+        <div id="advantageChart">
+            <canvas id="chartCanvas" width="400" height="30"></canvas>
+            <span id="advantageText"></span>
+        </div>
+        <div id="gameMessage"></div>
+    </div>
+
+    <!-- Модальное окно -->
+    <div id="winnerModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <p id="winnerText"></p>
+        </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script>
+        const roomId = "{{ room_id }}";
+        const socket = io();
+        let currentBoard = null;
+        let myColor = null;
+        let currentTurn = null;
+        let selectedRow = null, selectedCol = null;
+        let evaluationHistory = [];
+        let gameActive = false;
+
+        // Элементы DOM
+        const canvas = document.getElementById('boardCanvas');
+        const ctx = canvas.getContext('2d');
+        const cellSize = 500 / 10;
+        const turnStatusDiv = document.getElementById('turnStatus');
+        const opponentNameSpan = document.getElementById('opponentName');
+        const gameMessageDiv = document.getElementById('gameMessage');
+        const chartCanvas = document.getElementById('chartCanvas');
+        const chartCtx = chartCanvas.getContext('2d');
+        const advantageTextSpan = document.getElementById('advantageText');
+        const modal = document.getElementById('winnerModal');
+        const closeModal = document.getElementsByClassName('close')[0];
+        const winnerText = document.getElementById('winnerText');
+
+        // Отрисовка доски
+        function drawBoard(board) {
+            for (let row = 0; row < 10; row++) {
+                for (let col = 0; col < 10; col++) {
+                    const x = col * cellSize;
+                    const y = row * cellSize;
+                    const isDark = (row + col) % 2 === 1;
+                    ctx.fillStyle = isDark ? '#b58863' : '#f0d9b5';
+                    ctx.fillRect(x, y, cellSize, cellSize);
+                    if (selectedRow === row && selectedCol === col) {
+                        ctx.strokeStyle = 'gold';
+                        ctx.lineWidth = 4;
+                        ctx.strokeRect(x+2, y+2, cellSize-4, cellSize-4);
+                    }
+                    const piece = board[row][col];
+                    if (piece) {
+                        const gradient = ctx.createRadialGradient(x+cellSize*0.3, y+cellSize*0.3, 5, x+cellSize*0.5, y+cellSize*0.5, cellSize*0.3);
+                        if (piece.color === 'white') {
+                            gradient.addColorStop(0, '#fff');
+                            gradient.addColorStop(1, '#ccc');
+                        } else {
+                            gradient.addColorStop(0, '#333');
+                            gradient.addColorStop(1, '#111');
+                        }
+                        ctx.fillStyle = gradient;
+                        ctx.beginPath();
+                        ctx.arc(x + cellSize/2, y + cellSize/2, cellSize*0.35, 0, Math.PI*2);
+                        ctx.fill();
+                        ctx.strokeStyle = '#000';
+                        ctx.lineWidth = 1;
+                        ctx.stroke();
+                        if (piece.type === 'king') {
+                            ctx.fillStyle = piece.color === 'white' ? '#ffd966' : '#ffaa33';
+                            ctx.beginPath();
+                            ctx.arc(x + cellSize/2, y + cellSize/2, cellSize*0.2, 0, Math.PI*2);
+                            ctx.fill();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Диаграмма преимущества
+        function drawAdvantageChart(history) {
+            if (!history || history.length === 0) return;
+            const width = chartCanvas.width;
+            const height = chartCanvas.height;
+            chartCtx.clearRect(0, 0, width, height);
+            let maxAbs = Math.max(...history.map(v => Math.abs(v)), 0.001);
+            const scale = (height / 2) / maxAbs;
+            const step = width / (history.length - 1);
+            chartCtx.beginPath();
+            chartCtx.strokeStyle = '#2c6e2c';
+            chartCtx.lineWidth = 2;
+            for (let i = 0; i < history.length; i++) {
+                const x = i * step;
+                const y = height/2 - history[i] * scale;
+                if (i === 0) chartCtx.moveTo(x, y);
+                else chartCtx.lineTo(x, y);
+            }
+            chartCtx.stroke();
+            chartCtx.beginPath();
+            chartCtx.strokeStyle = '#aaa';
+            chartCtx.moveTo(0, height/2);
+            chartCtx.lineTo(width, height/2);
+            chartCtx.stroke();
+            const last = history[history.length-1];
+            if (last > 0.2) advantageTextSpan.innerText = `Преимущество белых: ${last.toFixed(2)}`;
+            else if (last < -0.2) advantageTextSpan.innerText = `Преимущество чёрных: ${(-last).toFixed(2)}`;
+            else advantageTextSpan.innerText = 'Равная позиция';
+        }
+
+        // Получение координат клика
+        function getCellFromClick(e) {
+            const rect = canvas.getBoundingClientRect();
+            const scale = canvas.width / rect.width;
+            const mouseX = (e.clientX - rect.left) * scale;
+            const mouseY = (e.clientY - rect.top) * scale;
+            const col = Math.floor(mouseX / cellSize);
+            const row = Math.floor(mouseY / cellSize);
+            if (row >= 0 && row < 10 && col >= 0 && col < 10) return { row, col };
+            return null;
+        }
+
+        canvas.addEventListener('click', (e) => {
+            if (!gameActive || myColor !== currentTurn) return;
+            const cell = getCellFromClick(e);
+            if (!cell) return;
+            const { row, col } = cell;
+            if (selectedRow === null) {
+                const piece = currentBoard[row][col];
+                if (piece && piece.color === myColor) {
+                    selectedRow = row;
+                    selectedCol = col;
+                    drawBoard(currentBoard);
+                }
+            } else {
+                socket.emit('make_move', {
+                    room_id: roomId,
+                    from: [selectedRow, selectedCol],
+                    to: [row, col]
+                });
+                selectedRow = null;
+                selectedCol = null;
+                drawBoard(currentBoard);
+            }
+        });
+
+        // Socket события
+        socket.on('connect', () => {
+            // Запрашиваем имя при подключении
+            const playerName = prompt('Введите ваше имя:');
+            if (!playerName) {
+                window.location.href = '/';
+                return;
+            }
+            socket.emit('join_game', { room_id: roomId, name: playerName });
+        });
+
+        socket.on('game_start', (data) => {
+            currentBoard = data.board;
+            currentTurn = data.current_turn;
+            myColor = data.your_color;
+            evaluationHistory = data.evaluation_history;
+            gameActive = true;
+            opponentNameSpan.innerText = `Противник: ${data.opponent_name}`;
+            drawBoard(currentBoard);
+            drawAdvantageChart(evaluationHistory);
+            updateTurnDisplay();
+        });
+
+        socket.on('opponent_joined', (data) => {
+            opponentNameSpan.innerText = `Противник: ${data.opponent_name}`;
+            gameMessageDiv.innerText = 'Противник подключился! Игра началась.';
+            setTimeout(() => gameMessageDiv.innerText = '', 3000);
+        });
+
+        socket.on('move_made', (data) => {
+            currentBoard = data.board;
+            currentTurn = data.current_turn;
+            evaluationHistory = data.evaluation_history;
+            drawBoard(currentBoard);
+            drawAdvantageChart(evaluationHistory);
+            updateTurnDisplay();
+        });
+
+        socket.on('game_over', (data) => {
+            gameActive = false;
+            evaluationHistory = data.evaluation_history;
+            drawAdvantageChart(evaluationHistory);
+            winnerText.innerText = `${data.winner} победил!`;
+            modal.style.display = 'block';
+        });
+
+        socket.on('opponent_disconnected', () => {
+            gameActive = false;
+            gameMessageDiv.innerText = 'Противник отключился. Игра завершена.';
+            turnStatusDiv.innerText = '';
+        });
+
+        socket.on('error', (data) => {
+            gameMessageDiv.innerText = data.message;
+            setTimeout(() => {
+                if (gameMessageDiv.innerText === data.message) gameMessageDiv.innerText = '';
+            }, 3000);
+        });
+
+        function updateTurnDisplay() {
+            if (!gameActive) return;
+            if (myColor === currentTurn) {
+                turnStatusDiv.innerText = 'Ваш ход';
+                turnStatusDiv.style.color = 'green';
+            } else {
+                turnStatusDiv.innerText = 'Ход противника';
+                turnStatusDiv.style.color = 'red';
+            }
+        }
+
+        // Закрытие модального окна
+        closeModal.onclick = () => {
+            modal.style.display = 'none';
+            window.location.href = '/';
+        };
+        window.onclick = (event) => {
+            if (event.target === modal) {
+                modal.style.display = 'none';
+                window.location.href = '/';
+            }
+        };
+    </script>
+</body>
+</html>
