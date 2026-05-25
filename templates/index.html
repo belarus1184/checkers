@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Шашки онлайн</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Международные шашки</h1>
+        <div class="form-group">
+            <label>Ваше имя:</label>
+            <input type="text" id="playerName" placeholder="Введите имя">
+        </div>
+        <div class="form-group">
+            <label>Цвет шашек:</label>
+            <select id="colorSelect">
+                <option value="white">Белые</option>
+                <option value="black">Чёрные</option>
+            </select>
+        </div>
+        <button id="createGameBtn">Создать игру</button>
+        <div id="info"></div>
+    </div>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script>
+        const socket = io();
+        const createBtn = document.getElementById('createGameBtn');
+        const nameInput = document.getElementById('playerName');
+        const colorSelect = document.getElementById('colorSelect');
+        const infoDiv = document.getElementById('info');
+
+        createBtn.onclick = () => {
+            const name = nameInput.value.trim();
+            if (!name) {
+                infoDiv.innerText = 'Введите имя';
+                return;
+            }
+            const color = colorSelect.value;
+            socket.emit('create_game', { name: name, color: color });
+        };
+
+        socket.on('game_created', (data) => {
+            const link = `${window.location.origin}/game/${data.room_id}`;
+            infoDiv.innerHTML = `Игра создана! Ваш цвет: ${data.color === 'white' ? 'Белые' : 'Чёрные'}<br>
+                                  Отправьте эту ссылку другу: <strong><a href="${link}" target="_blank">${link}</a></strong><br>
+                                  Ожидаем подключения...`;
+        });
+
+        socket.on('error', (data) => {
+            infoDiv.innerText = data.message;
+        });
+    </script>
+</body>
+</html>
